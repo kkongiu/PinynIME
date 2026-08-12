@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Pinyn Keyboard</string>
+    <string name="ime_name">Pinyn Pinyin Keyboard</string>
+    <string name="settings">Settings</string>
+    <string name="hanzi_mode">Convert to Hanzi</string>
+    <string name="accent_mode">Auto Accents</string>
+    <string name="grammar_check">Grammar Check</string>
+    <string name="about">Pinyn IME v0.15 — Pinyin correction keyboard</string>
+</resources>

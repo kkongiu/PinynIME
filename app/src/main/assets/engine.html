@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<script src="data/pinyin-syllables.js"></script>
+<script src="data/hsk-3.0.js"></script>
+<script src="data/hsk-defs.js"></script>
+<script src="engine/pinyin-utils.js"></script>
+<script src="engine/levenshtein.js"></script>
+<script src="engine/correction-engine.js"></script>
+<script>
+var engine = null;
+var ready = false;
+
+function initPinynEngine() {
+    if (ready) return;
+    try {
+        var base = window.__PINYN_HSK || [];
+        engine = PinynCorrectionEngine.createEngine({
+            wordList: base.map(function(w) {
+                return { w: w.w, p: w.p, l: w.l || 0 };
+            })
+        });
+        engine.setLevel(6);
+        ready = true;
+        if (typeof Android !== 'undefined') Android.log('engine ready');
+        if (typeof Android !== 'undefined') Android.onReady();
+    } catch(e) {
+        if (typeof Android !== 'undefined') Android.log('init err: ' + e);
+    }
+}
+
+function processInput(raw) {
+    if (!engine || !ready) return [];
+    try {
+        var clean = raw.toLowerCase().replace(/[^a-z' ]/g, '').trim();
+        if (!clean) return [];
+
+        // segment compact pinyin
+        var all = engine.segment(clean);
+        if (!all || !all.length) return [];
+
+        var results = [];
+        for (var i = 0; i < all.length && results.length < 5; i++) {
+            var syl = all[i];
+            var variants = engine.toneVariants(syl, 0) || [];
+            if (!variants.length) {
+                variants = [{ tone: 0, share: 100 }];
+            }
+            for (var j = 0; j < variants.length && results.length < 5; j++) {
+                var v = variants[j];
+                var marked = (typeof PinynUtils !== 'undefined')
+                    ? PinynUtils.addToneMark(syl, v.tone)
+                    : syl;
+                results.push({
+                    compact: syl,
+                    marked: marked,
+                    hanzi: '',
+                    score: Math.round(v.share || 0)
+                });
+            }
+        }
+        return results.slice(0, 5);
+    } catch(e) {
+        if (typeof Android !== 'undefined') Android.log('process err: ' + e);
+        return [];
+    }
+}
+
+window.PinynEngine = {
+    ready: false,
+    process: function(raw) {
+        var r = processInput(raw);
+        this.ready = ready;
+        return r;
+    }
+};
+
+window.addEventListener('load', function() {
+    setTimeout(initPinynEngine, 100);
+});
+</script>
+</head><body></body></html>
