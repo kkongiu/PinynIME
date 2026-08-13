@@ -9,90 +9,93 @@ correttore pinyin intelligente per studenti di cinese.
 ┌─── Pinyn IME (InputMethodService) ────────────────────┐
 │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐ │
 │  │ PinynIME.kt │──│ PinyinEngine │──│ PinyinData.kt │ │
-│  │ (I/O tasti) │  │ (segmentaz., │  │ (dizionario)  │ │
+│  │ (I/O tasti) │  │ (segmentaz.,  │  │ (dizionario)  │ │
 │  └─────────────┘  │  correzione) │  └───────────────┘ │
 │                    └──────────────┘                     │
 │                         │                              │
 │  ┌──────────────────────┴───────────────────────────┐  │
-│  │ Componenti (in ordine di priorità porting)       │  │
+│  │ Componenti (tutti portati e integrati)           │  │
 │  │                                                   │  │
-│  │ ⬜ ToneNet.kt        — rete neurale toni (215KB)  │  │
-│  │ ⬜ LevRank.kt        — Levenshtein + bigram rank  │  │
-│  │ ✅ Segmentation.kt   — DP segmentazione           │  │
-│  │ ⬜ AccentEngine.kt   — euristico + ibrido neurale │  │
-│  │ ⬜ SentenceLM.kt     — language model (1.5MB)     │  │
-│  │ ⬜ GrammarRules.kt   — 3 regole conservative      │  │
+│  │ ✅ ToneNet.kt        — rete neurale toni (215KB)  │  │
+│  │ ✅ Levenshtein.kt    — edit distance + swap       │  │
+│  │ ✅ CorrectionEngine.kt — bigram + rank + accenti  │  │
+│  │ ✅ PinyinUtils.kt    — toni numeri↔diacritici     │  │
+│  │ ✅ HskData.kt        — parser HSK 3.0 + POS       │  │
+│  │ ✅ SentenceNet.kt    — language model (1.5MB)     │  │
+│  │ ✅ GrammarRules.kt   — 3 regole conservative      │  │
+│  │ ✅ WordIndex.kt      — dizionario multi-sillaba   │  │
 │  └───────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────┘
 ```
 
-## Stato corrente (v0.1)
+## Stato corrente (v1.0)
 
 | Funzionalità | Stato | Note |
 |---|---|---|
 | Tastiera QWERTY | Fatto | Layout 4 righe, tasti disegnati a mano |
 | Candidate bar | Fatto | Mostra hanzi + pinyin con toni |
 | Segmentazione pinyin | Fatto | DP longest-valid-syllable-first |
-| Lookup toni | Stativo | Lookup statico da 1533 parole monosillabe HSK |
-| Correzione typo | Mancante | Levenshtein da portare |
-| Rete neurale toni | Mancante | Forward pass MLP da portare |
-| Ranking contestuale | Mancante | Bigram da portare |
-| Hanzi dalle reti | Mancante | Sentence LM da portare |
+| Segmentazione parole | Fatto | `segmentWords` (maximal munch) per LM/grammar |
+| Lookup toni | Fatto | ToneNet (MLP int8) + fallback euristico |
+| Accenti automatici | Fatto | `accentRun` ibrido euristica/neurale |
+| Correzione typo | Fatto | Levenshtein + swap adiacenti |
+| Ranking contestuale | Fatto | Bigramma per correzione + ordinamento candidati |
+| Hanzi da lookup | Fatto | CANDIDATE_MAP + dizionario parole |
+| Sentence LM | Fatto | Flag "struttura insolita" (perplexity > 7.5) |
+| Grammar rules | Fatto | Warning in candidate bar (3 regole) |
 | Toggle Hanzi/Pinyin | Fatto | Tasto `字` sulla tastiera |
 | Impostazioni | Fatto | Hanzi mode, accent mode, grammar |
 
-## Componenti da portare
+## Componenti
 
-### 1. ToneNet — Rete Neurale Toni
-
-**Source file:** `src/llm/tone-net.js` + `src/data/tone-net-data.js`
-**Dimensione modello:** ~215 KB (int8 quantizzato)
-**Architettura:** MLP a finestra di contesto ±5 sillabe
+### ToneNet — Rete Neurale Toni
+`ToneNet.kt` · MLP a finestra ±5 sillabe, int8 quantizzato (~215KB).
 ```
-Embedding(V x 32) → Flatten(11 × 32 = 352) → FC 352×128 ReLU → FC 128×64 ReLU → FC 64×5 softmax
+Embedding(V×32) → Flatten(11×32=352) → FC 352×128 ReLU → FC 128×64 ReLU → FC 64×5 softmax
 ```
-**Accuratezza:** ~82% per sillaba (vs ~73% euristico)
-**Runtime:** forward pass in Kotlin (~50 righe), caricamento pesi da asset JSON→Float32Array
-**Impatto:** toni predetti da AI invece che lookup statico
+Forward pass puro Kotlin, pesi caricati da `assets/data/tone-net-data.js`.
 
-### 2. Levenshtein + Bigram Ranking
+### CorrectionEngine — correzione e accenti
+`CorrectionEngine.kt` · Levenshtein (`Levenshtein.kt`) + bigrammi derivati dal
+vocabolario HSK + filtro livello + indice parole. Espone `rankSuggestions`,
+`findWordSuggestions`, `accentRun`, `accentChoice`, `toneVariants`, `toneSuspect`,
+`pinyinLevel`, `segmentWords`. `HskData.kt` parsa `hsk-3.0.js` (10.974 parole).
 
-**Source file:** `src/utils/levenshtein.js`, `src/utils/correction-engine.js`
-**Funzione:** correzione typo (edit distance + swap adiacenti) + ranking contestuale bigram
-**Impatto:** `hkao` → suggerisce `hǎo`, candidati ordinati per contesto frase
-
-### 3. Accent Engine (accentRun / accentChoice)
-
-**Source file:** `src/utils/correction-engine.js:accentRun()`
-**Funzione:** scelta ibrida euristico/neurale (confidenza ≥65% = euristico, altrimenti ToneNet)
-**Impatto:** accenti automatici a frase intera, non solo sillaba singola
-
-### 4. Sentence Language Model
-
-**Source file:** `src/llm/sentence-net.js` + `src/data/sentence-net-data.js`
-**Dimensione modello:** ~1.5 MB (int8 quantizzato)
-**Architettura:** MLP predittore a finestra K=3 parole
+### SentenceNet — Language Model forma
+`SentenceNet.kt` · MLP predittore a finestra K=3 parole (~1.5MB).
 ```
-Embedding(V × 32) → Flatten(K×32) → FC 96×V logits
+Embedding(V×32) → Flatten(K×32) → FC 96×V logits
 ```
-**Impatto:** punteggio di plausibilità frasi, flag per struttura insolita
+`scoreSentence(words)` → media `-log P`, flag se > 7.5.
 
-### 5. Grammar Rules
+### GrammarRules — verifica forma
+`GrammarRules.kt` · 3 regole conservative su POS non ambigui (`hsk-pos.js`):
+`很`+nome, `是`+verbo, `吗` non a fine frase.
 
-**Source file:** `src/utils/grammar-rules.js`
-**Funzione:** 3 regole conservative (很+nome, 是+verbo, 吗 non a fine frase)
-**Impatto:** warning in candidate bar
+## Asset
+
+```
+app/src/main/assets/data/
+├── hsk-3.0.js        # vocabolario HSK 3.0 (10.974 parole, {w,p,l})
+├── hsk-pos.js        # POS per le regole grammaticali (9.631 voci)
+├── sentence-net.json # pesi SentenceNet (int8, 1.5MB)
+├── tone-net-data.js  # pesi ToneNet (int8, 215KB)
+└── words.txt         # dizionario parole (8.553 voci: compatto/toni/hanzi)
+```
 
 ## Build & Sviluppo
 
 ```bash
 # Requisiti PC
-export JAVA_HOME=~/java/jdk-21.0.12+12   # Eclipse Temurin
+export JAVA_HOME=~/java/jdk-21.0.12+8   # Eclipse Temurin
 export ANDROID_HOME=~/Android/Sdk          # API 26 + 34
 
 # Build
 cd ~/pinyn-ime
 ./gradlew assembleDebug
+
+# Test
+./gradlew testDebugUnitTest
 
 # Install
 adb install -r app/build/outputs/apk/debug/app-debug.apk
@@ -105,4 +108,3 @@ adb logcat | grep -i pinyn
 
 - Progetto originale Pinyn: `/home/kongiu/projects/Pinyn/`
 - Android IME docs: https://developer.android.com/reference/android/inputmethodservice/InputMethodService
-- Componenti JS source: `src/llm/`, `src/utils/`, `src/data/`

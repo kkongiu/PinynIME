@@ -49,6 +49,7 @@ class PinynIME : InputMethodService() {
         keyboard.hanziMode = settings.hanziMode
         keyboard.updateCandidates(candidates)
         keyboard.updateComposing("")
+        keyboard.updateWarnings(emptyList())
     }
 
     private fun handleKey(key: PinynKeyboardView.Key) {
@@ -84,7 +85,7 @@ class PinynIME : InputMethodService() {
             }
 
             is PinynKeyboardView.Key.Char -> {
-                if (key.code in 'a'..'z' || key.code == '\'') {
+                if (key.code in 'a'..'z' || key.code == '\'' || key.code == '*') {
                     composing.append(key.code)
                     updateComposing()
                 } else {
@@ -99,6 +100,11 @@ class PinynIME : InputMethodService() {
                 keyboard.invalidate()
             }
 
+            PinynKeyboardView.Key.SYMBOL -> {
+                keyboard.symbolMode = !keyboard.symbolMode
+                keyboard.invalidate()
+            }
+
             else -> {}
         }
     }
@@ -109,11 +115,14 @@ class PinynIME : InputMethodService() {
         keyboard.updateComposing(raw)
 
         if (raw.isNotEmpty()) {
-            candidates = PinyinEngine.process(raw)
+            val analysis = PinyinEngine.analyze(raw, settings.grammarCheck)
+            candidates = analysis.candidates
             keyboard.updateCandidates(candidates)
+            keyboard.updateWarnings(analysis.warnings)
         } else {
             candidates = emptyList()
             keyboard.updateCandidates(candidates)
+            keyboard.updateWarnings(emptyList())
         }
     }
 
@@ -126,6 +135,7 @@ class PinynIME : InputMethodService() {
             candidates = emptyList()
             keyboard.updateComposing("")
             keyboard.updateCandidates(candidates)
+            keyboard.updateWarnings(emptyList())
         }
     }
 
@@ -137,6 +147,7 @@ class PinynIME : InputMethodService() {
         keyboard.updateComposing("")
         candidates = emptyList()
         keyboard.updateCandidates(candidates)
+        keyboard.updateWarnings(emptyList())
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {

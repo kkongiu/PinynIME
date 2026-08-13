@@ -2,6 +2,8 @@ package com.pinyn.ime
 
 import android.content.Context
 import android.graphics.*
+import android.os.Handler
+import android.os.Looper
 import android.text.TextPaint
 import android.view.MotionEvent
 import android.view.View
@@ -17,14 +19,17 @@ class PinynKeyboardView(context: Context) : View(context) {
         data object GLOBE : Key()
         data object CLOSE : Key()
         data object HANZI : Key()
+        data object SYMBOL : Key()
     }
 
     var onKeyPress: ((Key) -> Unit)? = null
     var onCandidateTap: ((Int) -> Unit)? = null
     var hanziMode = false
+    var symbolMode = false
 
     private var candidates: List<Candidate> = emptyList()
     private var composing: String = ""
+    private var warnings: List<String> = emptyList()
 
     private val keyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
@@ -66,20 +71,44 @@ class PinynKeyboardView(context: Context) : View(context) {
         typeface = Typeface.DEFAULT
     }
 
-    val keyRows = listOf(
+    private val warningPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(180, 100, 30)
+        textSize = 26f
+        textAlign = Paint.Align.LEFT
+        typeface = Typeface.DEFAULT
+    }
+
+    private val warningBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(255, 244, 224)
+    }
+
+    private val letterRows = listOf(
         listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
         listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"),
-        listOf("SHIFT", "z", "x", "c", "v", "b", "n", "m", "⌫"),
-        listOf("123", "⇄", ",", "SPACE", ".", "字", "↵")
+        listOf("z", "x", "c", "v", "b", "n", "m", "⌫"),
+        listOf("123", ",", "SPACE", ".", "字", "↵"),
     )
+
+    private val symbolRows = listOf(
+        listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"),
+        listOf("*", "-", "/", ":", ";", "(", ")", "$", "&", "@"),
+        listOf("#", "+", "=", "_", "?", "!", "'", "⌫"),
+        listOf("abc", ",", "SPACE", ".", "字", "↵"),
+    )
+
+    private val keyRows: List<List<String>> get() = if (symbolMode) symbolRows else letterRows
 
     private val keyRects = mutableListOf<Triple<RectF, Key, String>>()
 
     private val candidateHeight = 100f
     private val topBarHeight = 40f
+    private val warningBarHeight = 32f
     private val keyVerticalGap = 6f
     private val keyHorizontalGap = 6f
     private val cornerRadius = 8f
+
+    private val REPEAT_INITIAL_DELAY = 400L
+    private val REPEAT_INTERVAL = 50L
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val screenH = resources.displayMetrics.heightPixels
@@ -109,8 +138,17 @@ class PinynKeyboardView(context: Context) : View(context) {
         canvas.drawRect(0f, candY, w, candY + candidateHeight, candidateBgPaint)
         drawCandidates(canvas, candY, w - rightMargin)
 
+        // Warning strip (grammar / sentence LM), only when present
+        val warnH = if (warnings.isNotEmpty()) warningBarHeight else 0f
+        if (warnings.isNotEmpty()) {
+            val warnTop = candY + candidateHeight
+            canvas.drawRect(0f, warnTop, w, warnTop + warningBarHeight, warningBgPaint)
+            val text = warnings.joinToString("  •  ")
+            canvas.drawText(text, 16f, warnTop + warningBarHeight - 8f, warningPaint)
+        }
+
         // Keyboard background
-        val kbTop = candY + candidateHeight
+        val kbTop = candY + candidateHeight + warnH
         canvas.drawRect(0f, kbTop, w, h, Paint().apply { color = Color.rgb(30, 30, 40) })
 
         // Draw keys (left-aligned, right margin only)
@@ -121,19 +159,14 @@ class PinynKeyboardView(context: Context) : View(context) {
         val keyH = (h - kbTop - totalGapV) / totalRows
 
         for ((rowIdx, row) in usableRows.withIndex()) {
-            val n = row.size
-            val totalGapH = keyHorizontalGap * (n + 1)
-            val keyW = (usableW - totalGapH) / n
+            val units = row.sumOf { widthFactor(it).toDouble() }.toFloat()
+            val totalGapH = keyHorizontalGap * (row.size + 1)
+            val keyW = (usableW - totalGapH) / units
             val rowTop = kbTop + keyVerticalGap + rowIdx * (keyH + keyVerticalGap)
 
             var x = keyHorizontalGap
-            for ((colIdx, label) in row.withIndex()) {
-                val keyWidth = when (label) {
-                    "SPACE" -> keyW * 3 + keyHorizontalGap * 2
-                    "SHIFT", "⌫", "↵" -> keyW * 1.5f + keyHorizontalGap * 0.5f
-                    else -> keyW
-                }
-
+            for (label in row) {
+                val keyWidth = keyW * widthFactor(label)
                 val rect = RectF(x, rowTop, x + keyWidth, rowTop + keyH)
                 drawKey(canvas, rect, label)
                 val key = labelToKey(label)
@@ -143,30 +176,33 @@ class PinynKeyboardView(context: Context) : View(context) {
         }
     }
 
+    private fun widthFactor(label: String): Float = when (label) {
+        "SPACE" -> 3.5f
+        "⌫", "↵" -> 1.8f
+        "123", "abc" -> 1.5f
+        else -> 1f
+    }
+
     private fun labelToKey(label: String): Key = when (label) {
         "SPACE" -> Key.SPACE
         "↵" -> Key.ENTER
         "⌫" -> Key.BACKSPACE
-        "⇄" -> Key.GLOBE
         "字" -> Key.HANZI
-        "SHIFT", "123" -> Key.CLOSE
-        "," -> Key.Char(',')
-        "." -> Key.Char('.')
-        "'" -> Key.Char('\'')
-        else -> if (label.length == 1 && label[0] in 'a'..'z') Key.Char(label[0]) else Key.CLOSE
+        "123", "abc" -> Key.SYMBOL
+        else -> if (label.length == 1) Key.Char(label[0]) else Key.CLOSE
     }
 
     private fun drawKey(canvas: Canvas, rect: RectF, label: String) {
         val bg = when (label) {
             "SPACE" -> spaceBgPaint
-            "⌫", "↵", "SHIFT", "123", "⇄" -> specialBgPaint
+            "⌫", "↵", "123", "abc" -> specialBgPaint
             else -> keyBgPaint
         }
         val effectiveBg = if (label == "字" && hanziMode) {
             Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(51, 153, 255) }
         } else bg
         canvas.drawRoundRect(rect, cornerRadius, cornerRadius, effectiveBg)
-        keyPaint.textSize = when (label) { "⌫" -> 30f; "↵" -> 30f; "⇄" -> 32f; "123" -> 24f; "SHIFT" -> 22f; "字" -> 22f; else -> 40f }
+        keyPaint.textSize = when (label) { "⌫" -> 30f; "↵" -> 30f; "123" -> 22f; "abc" -> 22f; "字" -> 22f; else -> 40f }
         canvas.drawText(label, rect.centerX(), rect.centerY() + keyPaint.textSize / 3, keyPaint)
     }
 
@@ -187,10 +223,15 @@ class PinynKeyboardView(context: Context) : View(context) {
             if (c.hanzi.isNotEmpty()) {
                 candidatePaint.textSize = 34f
                 candidatePaint.color = Color.rgb(20, 20, 30)
-                canvas.drawText(c.hanzi, rect.centerX(), rect.centerY() - 6f, candidatePaint)
-                candidatePaint.textSize = 22f
+                canvas.drawText(c.hanzi, rect.centerX(), rect.centerY() - 14f, candidatePaint)
+                candidatePaint.textSize = 20f
                 candidatePaint.color = Color.GRAY
-                canvas.drawText(c.marked, rect.centerX(), rect.centerY() + 24f, candidatePaint)
+                canvas.drawText(c.marked, rect.centerX(), rect.centerY() + 12f, candidatePaint)
+                if (c.gloss.isNotEmpty()) {
+                    candidatePaint.textSize = 15f
+                    candidatePaint.color = Color.rgb(120, 120, 130)
+                    canvas.drawText(shortGloss(c.gloss), rect.centerX(), rect.centerY() + 34f, candidatePaint)
+                }
             } else {
                 candidatePaint.textSize = 32f
                 candidatePaint.color = Color.rgb(20, 20, 30)
@@ -201,26 +242,59 @@ class PinynKeyboardView(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.action == MotionEvent.ACTION_DOWN) {
-            val x = event.x
-            val y = event.y
-            // Check candidate taps
-            if (y < topBarHeight + candidateHeight && candidates.isNotEmpty()) {
-                val idx = findCandidateIndex(x, width.toFloat())
-                if (idx >= 0) {
-                    onCandidateTap?.invoke(idx)
-                    return true
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val x = event.x
+                val y = event.y
+                // Check candidate taps
+                if (y < topBarHeight + candidateHeight && candidates.isNotEmpty()) {
+                    val idx = findCandidateIndex(x, width.toFloat())
+                    if (idx >= 0) {
+                        onCandidateTap?.invoke(idx)
+                        return true
+                    }
+                }
+                // Check key taps
+                for ((rect, key, _) in keyRects) {
+                    if (rect.contains(x, y)) {
+                        onKeyPress?.invoke(key)
+                        if (key == Key.BACKSPACE) startRepeat(key)
+                        return true
+                    }
                 }
             }
-            // Check key taps
-            for ((rect, key, _) in keyRects) {
-                if (rect.contains(x, y)) {
-                    onKeyPress?.invoke(key)
-                    return true
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> stopRepeat()
+        }
+        return true
+    }
+
+    private val repeatHandler = Handler(Looper.getMainLooper())
+    private var repeatingKey: Key? = null
+    private var repeatRunnable: Runnable? = null
+
+    private fun startRepeat(key: Key) {
+        stopRepeat()
+        repeatingKey = key
+        repeatRunnable = object : Runnable {
+            override fun run() {
+                if (repeatingKey != null) {
+                    onKeyPress?.invoke(repeatingKey!!)
+                    repeatHandler.postDelayed(this, REPEAT_INTERVAL)
                 }
             }
         }
-        return true
+        repeatHandler.postDelayed(repeatRunnable!!, REPEAT_INITIAL_DELAY)
+    }
+
+    private fun stopRepeat() {
+        repeatingKey = null
+        repeatRunnable?.let { repeatHandler.removeCallbacks(it) }
+        repeatRunnable = null
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        stopRepeat()
     }
 
     private fun findCandidateIndex(x: Float, width: Float): Int {
@@ -240,8 +314,18 @@ class PinynKeyboardView(context: Context) : View(context) {
         invalidate()
     }
 
+    fun updateWarnings(list: List<String>) {
+        warnings = list
+        invalidate()
+    }
+
     fun updateComposing(text: String) {
         composing = text
         invalidate()
+    }
+
+    private fun shortGloss(g: String): String {
+        val max = 16
+        return if (g.length <= max) g else g.substring(0, max - 1) + "…"
     }
 }

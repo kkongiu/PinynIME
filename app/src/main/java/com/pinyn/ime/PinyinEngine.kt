@@ -1,75 +1,236 @@
 package com.pinyn.ime
 
+import android.content.res.AssetManager
+
 object PinyinEngine {
 
-    private var toneNet: ToneNet? = null
-    private var toneNetReady = false
+    data class Analysis(
+        val candidates: List<Candidate>,
+        val warnings: List<String>,
+    )
 
-    fun init(assets: android.content.res.AssetManager) {
-        toneNet = ToneNet()
-        toneNetReady = toneNet!!.loadFromAssets(assets)
+    @Volatile private var toneNet: ToneNet? = null
+    @Volatile private var toneNetReady = false
+    @Volatile private var correction: CorrectionEngine? = null
+    @Volatile private var sentenceNet: SentenceNet? = null
+    @Volatile private var sentenceNetReady = false
+    @Volatile private var grammarLoaded = false
+    @Volatile private var bareToneHanzi: Map<String, String> = emptyMap()
+
+    fun init(assets: AssetManager) {
+        // Dizionario parole: veloce e sincrono, così il match base funziona subito.
         WordIndex.load(assets)
-        android.util.Log.d("PinyinEngine", "ToneNet ready: $toneNetReady")
+
+        // Caricamento pesante (ToneNet/SentenceNet/HSK/POS) in background: evita l'ANR
+        // al primo avvio (~5s di parse + dequantizzazione sul main thread).
+        Thread({
+            try {
+                val tn = ToneNet()
+                val tnReady = tn.loadFromAssets(assets)
+                val hsk = HskData.parseHsk(readAsset(assets, "data/hsk-3.0.js"))
+                val bth = HskData.buildBareToneHanzi(hsk)
+                val corr = CorrectionEngine(VALID_SYLLABLES, hsk).apply {
+                    setTonePredictor { sylls -> tn.predictTones(sylls) }
+                }
+                val sn = SentenceNet()
+                val snReady = sn.loadFromAssets(assets)
+                val pos = readAsset(assets, "data/hsk-pos.js")
+                val glossTxt = readAsset(assets, "data/gloss.txt")
+                val reverseJs = readAsset(assets, "data/hsk-reverse.js")
+
+                synchronized(this) {
+                    toneNet = tn
+                    toneNetReady = tnReady
+                    correction = corr
+                    sentenceNet = sn
+                    sentenceNetReady = snReady
+                    GrammarRules.loadPos(pos)
+                    grammarLoaded = true
+                    bareToneHanzi = bth
+                    HskGloss.loadGloss(glossTxt)
+                    HskGloss.loadReverse(reverseJs)
+                }
+                android.util.Log.d("PinyinEngine", "Loaded: ToneNet=$tnReady SentenceNet=$snReady")
+            } catch (e: Exception) {
+                android.util.Log.e("PinyinEngine", "background init failed", e)
+            }
+        }, "pinyn-engine-init").start()
     }
 
-    fun process(raw: String): List<Candidate> {
-        val clean = raw.lowercase().replace(Regex("[^a-z' ]"), "").trim()
-        if (clean.isEmpty()) return emptyList()
+    /** Inizializzazione testabile da stringhe (unit test senza Android). */
+    fun initData(toneNetJson: String?, hskJs: String?, sentenceNetJson: String?, posJs: String?) {
+        if (toneNetJson != null) {
+            toneNet = ToneNet()
+            toneNetReady = toneNet!!.loadFromString(toneNetJson)
+        }
+        if (hskJs != null) {
+            val hsk = HskData.parseHsk(hskJs)
+            correction = CorrectionEngine(VALID_SYLLABLES, hsk).apply {
+                setTonePredictor { sylls -> toneNet?.predictTones(sylls) }
+            }
+            bareToneHanzi = HskData.buildBareToneHanzi(hsk)
+        }
+        if (sentenceNetJson != null) {
+            sentenceNet = SentenceNet()
+            sentenceNetReady = sentenceNet!!.loadFromString(sentenceNetJson)
+        }
+        if (posJs != null) {
+            GrammarRules.loadPos(posJs)
+            grammarLoaded = true
+        }
+    }
+
+    /** Carica gloss + reverse (testabile). */
+    fun initGlossData(glossTxt: String, reverseJs: String) {
+        HskGloss.loadGloss(glossTxt)
+        HskGloss.loadReverse(reverseJs)
+    }
+
+    fun reset() {
+        toneNet = null
+        toneNetReady = false
+        correction = null
+        sentenceNet = null
+        sentenceNetReady = false
+        grammarLoaded = false
+        bareToneHanzi = emptyMap()
+    }
+
+    private fun readAsset(assets: AssetManager, path: String): String =
+        assets.open(path).bufferedReader().use { it.readText() }
+
+    fun process(raw: String): List<Candidate> = analyze(raw).candidates
+
+    fun analyze(raw: String, grammarCheck: Boolean = true): Analysis {
+        // Modalità inglese (prefisso "*"): dizionario inverso inglese -> cinese
+        val trimmed = raw.trimStart()
+        if (trimmed.startsWith("*")) {
+            val word = trimmed.substring(1).lowercase().filter { it in 'a'..'z' }
+            if (word.isEmpty()) return Analysis(emptyList(), emptyList())
+            val out = mutableListOf<Candidate>()
+            HskGloss.reverseLookup(word).forEachIndexed { idx, r ->
+                out.add(Candidate(r.bare, accentBare(r.bare), r.hanzi, 1000 - idx, r.gloss))
+            }
+            return Analysis(out, emptyList())
+        }
+
+        val clean = raw.lowercase().replace("v", "ü").replace(Regex("[^a-zü' ]"), "").trim()
+        if (clean.isEmpty()) return Analysis(emptyList(), emptyList())
 
         val results = mutableListOf<Candidate>()
-
-        // 1) Match parola multi-sillaba (frase compatta senza spazi)
         val compact = clean.replace(" ", "")
+
+        // 1) Whole-word exact match (dictionary with hanzi)
         if (compact.length >= 2) {
-            val wordPinyin = WordIndex.pinyin(compact)
-            if (wordPinyin != null) {
+            WordIndex.pinyin(compact)?.let { wordPinyin ->
                 val marked = numbersToMarks(wordPinyin)
                 val hanzi = WordIndex.hanzi(compact) ?: ""
                 results.add(Candidate(compact, marked, hanzi, 1000))
             }
         }
 
-        // 2) Segmentazione in sillabe
+        // 2) Whole-word typo suggestions (Levenshtein vs HSK compact pinyin)
+        if (compact.length >= 3 && WordIndex.pinyin(compact) == null) {
+            correction?.findWordSuggestions(compact)?.take(4)?.forEach { spaced ->
+                val bareCompact = PinyinUtils.stripTone(spaced).replace(" ", "")
+                val markedCompact = spaced.replace(" ", "")
+                val hanzi = WordIndex.hanzi(bareCompact) ?: ""
+                results.add(Candidate(bareCompact, markedCompact, hanzi, 800))
+            }
+        }
+
+        // 3) Segmentation + per-syllable candidates (with typo correction)
         val parts = clean.split(Regex("\\s+"))
         val allSegments = mutableListOf<String>()
         for (part in parts) {
             val seg = segment(part)
-            if (seg.isNotEmpty()) allSegments.addAll(seg)
-            else allSegments.add(part)
+            if (seg.isNotEmpty()) allSegments.addAll(seg) else allSegments.add(part)
         }
 
-        // 3) Toni predetti dalla rete (contesto)
-        val predictedTones: IntArray? = if (toneNetReady) {
-            toneNet?.predictTones(allSegments.toTypedArray())
-        } else null
+        val predictedTones = if (toneNetReady) toneNet?.predictTones(allSegments.toTypedArray()) else null
 
-        // 4) Candidati per sillaba (ponderati per livello HSK)
+        var prevSyl: String? = null
         for ((i, syl) in allSegments.withIndex()) {
-            val staticCands = CANDIDATE_MAP[syl]
-            if (staticCands != null && staticCands.isNotEmpty()) {
-                val predTone = predictedTones?.getOrNull(i) ?: 0
-                val nnMarked = if (predTone > 0) addToneMark(syl, predTone) else null
-                // Metti in testa il tono della rete se diverso dal primo statico
-                if (nnMarked != null && staticCands.firstOrNull()?.marked != nnMarked) {
-                    val existing = staticCands.firstOrNull { it.marked == nnMarked }
-                    if (existing != null) {
-                        results.add(existing.copy(score = 1000))
+            val predTone = predictedTones?.getOrNull(i) ?: 0
+
+            if (syl in VALID_SYLLABLES) {
+                val staticCands = CANDIDATE_MAP[syl]
+                if (staticCands != null && staticCands.isNotEmpty()) {
+                    val nnMarked = if (predTone > 0) addToneMark(syl, predTone) else null
+                    if (nnMarked != null && staticCands.firstOrNull()?.marked != nnMarked) {
+                        val existing = staticCands.firstOrNull { it.marked == nnMarked }
+                        if (existing != null) results.add(existing.copy(score = 1000))
+                        else results.add(Candidate(syl, nnMarked, "", 500))
+                    }
+                    results.addAll(staticCands)
+                } else {
+                    if (predTone > 0) {
+                        results.add(Candidate(syl, addToneMark(syl, predTone), "", 0))
                     } else {
-                        results.add(Candidate(syl, nnMarked, "", 500))
+                        for (t in 1..4) results.add(Candidate(syl, addToneMark(syl, t), "", 0))
                     }
                 }
-                results.addAll(staticCands)
+                prevSyl = syl
             } else {
-                val predTone = predictedTones?.getOrNull(i) ?: 0
-                if (predTone > 0) {
-                    results.add(Candidate(syl, addToneMark(syl, predTone), "", 0))
-                } else {
-                    for (t in 1..4) results.add(Candidate(syl, addToneMark(syl, t), "", 0))
+                // Typo: suggest corrections with bigram context from the last valid syllable
+                val sugg = correction?.rankSuggestions(syl, prevSyl) ?: emptyList()
+                for (s in sugg) {
+                    val cands = CANDIDATE_MAP[s] ?: continue
+                    results.addAll(cands)
                 }
             }
         }
 
-        return results.take(8)
+        val warnings = computeWarnings(allSegments, grammarCheck)
+
+        // Ogni candidato deve avere un hanzi: riempie dai toni HSK o scarta il candidato.
+        val enriched = results.mapNotNull { c ->
+            val hanzi = if (c.hanzi.isNotEmpty()) c.hanzi else (bareToneHanzi[keyFor(c)] ?: "")
+            if (hanzi.isEmpty()) null
+            else {
+                val gloss = if (c.gloss.isNotEmpty()) c.gloss else (HskGloss.glossFor(hanzi) ?: "")
+                c.copy(hanzi = hanzi, gloss = gloss)
+            }
+        }
+        return Analysis(enriched.take(8), warnings)
+    }
+
+    private fun keyFor(c: Candidate): String {
+        val tone = PinyinUtils.extractTone(c.marked).tone
+        return c.compact + if (tone > 0) tone else 0
+    }
+
+    private fun accentBare(bare: String): String {
+        val seg = correction?.accentRun(listOf(bare))?.firstOrNull() ?: return bare
+        return seg.text
+    }
+
+    private fun computeWarnings(allSegments: List<String>, grammarCheck: Boolean): List<String> {
+        val warnings = mutableListOf<String>()
+        val words = correction?.segmentWords(allSegments) ?: allSegments
+
+        // Sentence LM: flag unusual sentence structure (>= 3 words)
+        if (sentenceNetReady && words.size > 2) {
+            val score = sentenceNet?.scoreSentence(words)
+            if (score != null && score.flagged) {
+                warnings.add("Struttura della frase insolita")
+            }
+        }
+
+        // Grammar rules: conservative checks using the best hanzi guess per word
+        if (grammarCheck && grammarLoaded && words.size >= 2) {
+            val gw = words.map { GrammarRules.Word(it, hanziFor(it)) }
+            for (note in GrammarRules.checkGrammar(gw)) warnings.add(note.message)
+        }
+
+        return warnings
+    }
+
+    private fun hanziFor(word: String): String {
+        if (word.length >= 2) {
+            WordIndex.hanzi(word)?.let { return it }
+        }
+        return CANDIDATE_MAP[word]?.firstOrNull { it.hanzi.isNotEmpty() }?.hanzi ?: ""
     }
 
     /** Segmenta pinyin compatto in sillabe valide (DP longest-first) */

@@ -1,6 +1,6 @@
 package com.pinyn.ime
 
-data class Candidate(val compact: String, val marked: String, val hanzi: String, val score: Int)
+data class Candidate(val compact: String, val marked: String, val hanzi: String, val score: Int, val gloss: String = "")
 
 val VALID_SYLLABLES: Set<String> = setOf(
     "a", "ai", "an", "ang", "ao", "ba", "bai", "ban",
