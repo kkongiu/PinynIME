@@ -4,11 +4,16 @@ package com.pinyn.ime
  * GrammarRules — verifica grammaticale base (molto conservativa).
  * Opera sulle parole segmentate di una frase pinyin: ogni parola ha {bare, hanzi}.
  * Porting nativo di `grammar-rules.js`.
+ *
+ * Le note sono strutturate (kind + args): il testo localizzato è prodotto dal
+ * chiamante tramite le risorse string.
  */
 object GrammarRules {
 
+    enum class Kind { DEGREE_ADV_NOUN, SHI_VERB, MA_NOT_FINAL }
+
     data class Word(val bare: String, val hanzi: String)
-    data class Note(val index: Int, val message: String)
+    data class Note(val index: Int, val kind: Kind, val args: List<String>)
 
     private val DEGREE_ADV = setOf("很", "太", "非常", "特别", "真", "挺")
 
@@ -38,12 +43,7 @@ object GrammarRules {
             if (next != null && w.hanzi in DEGREE_ADV) {
                 val np = posOf(next.hanzi)
                 if (np == "N") {
-                    notes.add(
-                        Note(
-                            i,
-                            "\"${w.hanzi}\" prima di un nome (\"${next.hanzi}\"): di solito ${w.hanzi} modifica un aggettivo o un verbo.",
-                        ),
-                    )
+                    notes.add(Note(i, Kind.DEGREE_ADV_NOUN, listOf(w.hanzi, next.hanzi)))
                 }
             }
 
@@ -52,18 +52,13 @@ object GrammarRules {
                 val vp = posOf(next.hanzi)
                 val skip = setOf("的", "了", "过", "在", "有", "不", "没", "吗", "呢")
                 if (vp == "V" && next.hanzi !in skip) {
-                    notes.add(
-                        Note(
-                            i,
-                            "\"是\" davanti al verbo \"${next.hanzi}\": di solito si usa il verbo direttamente (\"${next.hanzi}…\").",
-                        ),
-                    )
+                    notes.add(Note(i, Kind.SHI_VERB, listOf(next.hanzi)))
                 }
             }
 
             // 3) 吗 non a fine frase
             if (w.hanzi == "吗" && i < words.size - 1) {
-                notes.add(Note(i, "\"吗\" va alla fine della frase."))
+                notes.add(Note(i, Kind.MA_NOT_FINAL, emptyList()))
             }
         }
         return notes

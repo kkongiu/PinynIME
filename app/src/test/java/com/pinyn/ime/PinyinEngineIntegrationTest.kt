@@ -110,6 +110,20 @@ class PinyinEngineIntegrationTest {
     }
 
     @Test
+    fun `custom term from user dictionary is findable`() {
+        PinyinEngine.applySettings(7.5, setOf("测试词\tce4 shi4 ci2"))
+        val r = PinyinEngine.process("ceshici")
+        assertTrue(r.any { it.hanzi == "测试词" }, r.toString())
+    }
+
+    @Test
+    fun `applySettings with no custom terms still works`() {
+        PinyinEngine.applySettings(3.0, emptySet())
+        val r = PinyinEngine.process("nihao")
+        assertEquals("你好", r.first().hanzi)
+    }
+
+    @Test
     fun `english reverse mode with asterisk`() {
         val a = PinyinEngine.analyze("*hello")
         assertTrue(a.candidates.any { it.hanzi == "你好" }, a.candidates.toString())

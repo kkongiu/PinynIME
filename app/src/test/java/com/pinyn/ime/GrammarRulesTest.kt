@@ -18,7 +18,8 @@ class GrammarRulesTest {
     fun `degree adverb before noun warns`() {
         val notes = GrammarRules.checkGrammar(listOf(w("我"), w("很"), w("学生")))
         assertEquals(1, notes.size)
-        assertTrue(notes[0].message.contains("很"))
+        assertEquals(GrammarRules.Kind.DEGREE_ADV_NOUN, notes[0].kind)
+        assertEquals(listOf("很", "学生"), notes[0].args)
     }
 
     @Test
@@ -30,7 +31,7 @@ class GrammarRulesTest {
     @Test
     fun `shi before verb warns`() {
         val notes = GrammarRules.checkGrammar(listOf(w("我"), w("是"), w("去"), w("学校")))
-        assertTrue(notes.any { it.message.contains("是") })
+        assertTrue(notes.any { it.kind == GrammarRules.Kind.SHI_VERB })
     }
 
     @Test
@@ -42,7 +43,7 @@ class GrammarRulesTest {
     @Test
     fun `ma not at sentence end warns`() {
         val notes = GrammarRules.checkGrammar(listOf(w("你"), w("去"), w("吗"), w("学校")))
-        assertTrue(notes.any { it.message.contains("吗") })
+        assertTrue(notes.any { it.kind == GrammarRules.Kind.MA_NOT_FINAL })
     }
 
     @Test

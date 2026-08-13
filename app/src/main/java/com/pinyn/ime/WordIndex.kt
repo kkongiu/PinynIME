@@ -7,6 +7,8 @@ object WordIndex {
 
     private var pinyinMap: Map<String, String> = emptyMap()
     private var hanziMap: Map<String, String> = emptyMap()
+    private var customPinyin: Map<String, String> = emptyMap()
+    private var customHanzi: Map<String, String> = emptyMap()
     private var loaded = false
 
     fun load(assets: AssetManager) {
@@ -35,9 +37,15 @@ object WordIndex {
         loaded = true
     }
 
-    fun pinyin(compact: String): String? = pinyinMap[compact]
+    fun pinyin(compact: String): String? = customPinyin[compact] ?: pinyinMap[compact]
 
-    fun hanzi(compact: String): String? = hanziMap[compact]
+    fun hanzi(compact: String): String? = customHanzi[compact] ?: hanziMap[compact]
 
     fun isLoaded(): Boolean = loaded
+
+    /** Sostituisce i termini personalizzati (compact, pinyin_numbers, hanzi). */
+    fun setCustom(entries: List<Triple<String, String, String>>) {
+        customPinyin = entries.associate { it.first to it.second }
+        customHanzi = entries.associate { it.first to it.third }
+    }
 }

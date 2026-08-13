@@ -20,35 +20,37 @@ class PinynKeyboardView(context: Context) : View(context) {
         data object CLOSE : Key()
         data object HANZI : Key()
         data object SYMBOL : Key()
+        data object SYMBOL_SHIFT : Key()
+        data object SETTINGS : Key()
     }
 
     var onKeyPress: ((Key) -> Unit)? = null
     var onCandidateTap: ((Int) -> Unit)? = null
     var hanziMode = false
     var symbolMode = false
+    var symbolPage2 = false
+    var darkMode = true
+        set(v) {
+            field = v
+            applyTheme()
+            invalidate()
+        }
 
     private var candidates: List<Candidate> = emptyList()
     private var composing: String = ""
     private var warnings: List<String> = emptyList()
 
     private val keyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
         textSize = 40f
         textAlign = Paint.Align.CENTER
         typeface = Typeface.DEFAULT
     }
 
-    private val keyBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.rgb(60, 60, 70)
-    }
-
-    private val specialBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.rgb(80, 80, 90)
-    }
-
-    private val spaceBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.rgb(50, 50, 60)
-    }
+    private val keyBgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val specialBgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val spaceBgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val topBarBgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val kbBgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     private val candidatePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
@@ -65,7 +67,6 @@ class PinynKeyboardView(context: Context) : View(context) {
     }
 
     private val composingPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
         textSize = 32f
         textAlign = Paint.Align.LEFT
         typeface = Typeface.DEFAULT
@@ -82,6 +83,30 @@ class PinynKeyboardView(context: Context) : View(context) {
         color = Color.rgb(255, 244, 224)
     }
 
+    init {
+        applyTheme()
+    }
+
+    private fun applyTheme() {
+        if (darkMode) {
+            keyPaint.color = Color.WHITE
+            keyBgPaint.color = Color.rgb(60, 60, 70)
+            specialBgPaint.color = Color.rgb(80, 80, 90)
+            spaceBgPaint.color = Color.rgb(50, 50, 60)
+            topBarBgPaint.color = Color.rgb(30, 30, 40)
+            kbBgPaint.color = Color.rgb(30, 30, 40)
+            composingPaint.color = Color.WHITE
+        } else {
+            keyPaint.color = Color.rgb(30, 30, 40)
+            keyBgPaint.color = Color.rgb(230, 230, 235)
+            specialBgPaint.color = Color.rgb(205, 205, 215)
+            spaceBgPaint.color = Color.rgb(215, 215, 225)
+            topBarBgPaint.color = Color.rgb(240, 240, 245)
+            kbBgPaint.color = Color.rgb(240, 240, 245)
+            composingPaint.color = Color.rgb(30, 30, 40)
+        }
+    }
+
     private val letterRows = listOf(
         listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
         listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"),
@@ -92,11 +117,22 @@ class PinynKeyboardView(context: Context) : View(context) {
     private val symbolRows = listOf(
         listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"),
         listOf("*", "-", "/", ":", ";", "(", ")", "$", "&", "@"),
-        listOf("#", "+", "=", "_", "?", "!", "'", "⌫"),
-        listOf("abc", ",", "SPACE", ".", "字", "↵"),
+        listOf("#+=", "_", "?", "!", "'", "\"", "⌫"),
+        listOf("abc", "⚙", ",", "SPACE", ".", "字", "↵"),
     )
 
-    private val keyRows: List<List<String>> get() = if (symbolMode) symbolRows else letterRows
+    private val symbolRows2 = listOf(
+        listOf("[", "]", "{", "}", "#", "%", "^", "*", "+", "="),
+        listOf("_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"),
+        listOf("123", "_", "?", "!", "'", "\"", "⌫"),
+        listOf("abc", "⚙", ",", "SPACE", ".", "字", "↵"),
+    )
+
+    private val keyRows: List<List<String>> get() = when {
+        !symbolMode -> letterRows
+        symbolPage2 -> symbolRows2
+        else -> symbolRows
+    }
 
     private val keyRects = mutableListOf<Triple<RectF, Key, String>>()
 
@@ -109,10 +145,11 @@ class PinynKeyboardView(context: Context) : View(context) {
 
     private val REPEAT_INITIAL_DELAY = 400L
     private val REPEAT_INTERVAL = 50L
+    private val LONG_PRESS_DELAY = 500L
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val screenH = resources.displayMetrics.heightPixels
-        val desiredH = (screenH * 0.45).toInt()
+        val desiredH = (screenH * 0.42).toInt()
         super.onMeasure(
             widthMeasureSpec,
             MeasureSpec.makeMeasureSpec(desiredH, MeasureSpec.EXACTLY)
@@ -123,12 +160,11 @@ class PinynKeyboardView(context: Context) : View(context) {
         super.onDraw(canvas)
         val w = width.toFloat()
         val h = height.toFloat()
-        val rightMargin = w * 0.12f  // margin only on right side (system inset)
 
         keyRects.clear()
 
         // Top bar: composing text
-        canvas.drawRect(0f, 0f, w, topBarHeight, Paint().apply { color = Color.rgb(30, 30, 40) })
+        canvas.drawRect(0f, 0f, w, topBarHeight, topBarBgPaint)
         if (composing.isNotEmpty()) {
             canvas.drawText(composing, 16f, topBarHeight - 10f, composingPaint)
         }
@@ -136,7 +172,7 @@ class PinynKeyboardView(context: Context) : View(context) {
         // Candidate bar
         val candY = topBarHeight
         canvas.drawRect(0f, candY, w, candY + candidateHeight, candidateBgPaint)
-        drawCandidates(canvas, candY, w - rightMargin)
+        drawCandidates(canvas, candY, w)
 
         // Warning strip (grammar / sentence LM), only when present
         val warnH = if (warnings.isNotEmpty()) warningBarHeight else 0f
@@ -149,10 +185,10 @@ class PinynKeyboardView(context: Context) : View(context) {
 
         // Keyboard background
         val kbTop = candY + candidateHeight + warnH
-        canvas.drawRect(0f, kbTop, w, h, Paint().apply { color = Color.rgb(30, 30, 40) })
+        canvas.drawRect(0f, kbTop, w, h, kbBgPaint)
 
-        // Draw keys (left-aligned, right margin only)
-        val usableW = w - rightMargin
+        // Draw keys
+        val usableW = w
         val usableRows = keyRows
         val totalRows = usableRows.size
         val totalGapV = keyVerticalGap * (totalRows + 1)
@@ -179,7 +215,7 @@ class PinynKeyboardView(context: Context) : View(context) {
     private fun widthFactor(label: String): Float = when (label) {
         "SPACE" -> 3.5f
         "⌫", "↵" -> 1.8f
-        "123", "abc" -> 1.5f
+        "123", "abc", "⚙", "#+=" -> 1.5f
         else -> 1f
     }
 
@@ -188,21 +224,24 @@ class PinynKeyboardView(context: Context) : View(context) {
         "↵" -> Key.ENTER
         "⌫" -> Key.BACKSPACE
         "字" -> Key.HANZI
-        "123", "abc" -> Key.SYMBOL
+        "⚙" -> Key.SETTINGS
+        "#+=" -> Key.SYMBOL_SHIFT
+        "123" -> if (symbolMode && symbolPage2) Key.SYMBOL_SHIFT else Key.SYMBOL
+        "abc" -> Key.SYMBOL
         else -> if (label.length == 1) Key.Char(label[0]) else Key.CLOSE
     }
 
     private fun drawKey(canvas: Canvas, rect: RectF, label: String) {
         val bg = when (label) {
             "SPACE" -> spaceBgPaint
-            "⌫", "↵", "123", "abc" -> specialBgPaint
+            "⌫", "↵", "123", "abc", "⚙", "#+=" -> specialBgPaint
             else -> keyBgPaint
         }
         val effectiveBg = if (label == "字" && hanziMode) {
             Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(51, 153, 255) }
         } else bg
         canvas.drawRoundRect(rect, cornerRadius, cornerRadius, effectiveBg)
-        keyPaint.textSize = when (label) { "⌫" -> 30f; "↵" -> 30f; "123" -> 22f; "abc" -> 22f; "字" -> 22f; else -> 40f }
+        keyPaint.textSize = when (label) { "⌫" -> 30f; "↵" -> 30f; "123" -> 22f; "abc" -> 22f; "⚙" -> 26f; "#+=" -> 20f; "字" -> 22f; else -> 40f }
         canvas.drawText(label, rect.centerX(), rect.centerY() + keyPaint.textSize / 3, keyPaint)
     }
 
@@ -257,13 +296,32 @@ class PinynKeyboardView(context: Context) : View(context) {
                 // Check key taps
                 for ((rect, key, _) in keyRects) {
                     if (rect.contains(x, y)) {
-                        onKeyPress?.invoke(key)
-                        if (key == Key.BACKSPACE) startRepeat(key)
+                        if (key == Key.SPACE) {
+                            spaceDown = true
+                            spaceLongPressed = false
+                            spaceRunnable?.let { repeatHandler.removeCallbacks(it) }
+                            spaceRunnable = Runnable {
+                                spaceLongPressed = true
+                                onGlobePress?.invoke()
+                            }
+                            repeatHandler.postDelayed(spaceRunnable!!, LONG_PRESS_DELAY)
+                        } else {
+                            onKeyPress?.invoke(key)
+                            if (key == Key.BACKSPACE) startRepeat(key)
+                        }
                         return true
                     }
                 }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> stopRepeat()
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (spaceDown && !spaceLongPressed) {
+                    onKeyPress?.invoke(Key.SPACE)
+                }
+                spaceDown = false
+                spaceRunnable?.let { repeatHandler.removeCallbacks(it) }
+                spaceRunnable = null
+                stopRepeat()
+            }
         }
         return true
     }
@@ -271,6 +329,11 @@ class PinynKeyboardView(context: Context) : View(context) {
     private val repeatHandler = Handler(Looper.getMainLooper())
     private var repeatingKey: Key? = null
     private var repeatRunnable: Runnable? = null
+    private var spaceRunnable: Runnable? = null
+    private var spaceDown = false
+    private var spaceLongPressed = false
+
+    var onGlobePress: (() -> Unit)? = null
 
     private fun startRepeat(key: Key) {
         stopRepeat()

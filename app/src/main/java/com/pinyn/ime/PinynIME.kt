@@ -1,13 +1,18 @@
 package com.pinyn.ime
 
+import android.content.Intent
 import android.inputmethodservice.InputMethodService
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 
 class PinynIME : InputMethodService() {
 
@@ -31,6 +36,8 @@ class PinynIME : InputMethodService() {
         keyboard = PinynKeyboardView(this).apply {
             onKeyPress = { key -> handleKey(key) }
             onCandidateTap = { idx -> selectCandidate(idx) }
+            onGlobePress = { switchInputMethod() }
+            darkMode = settings.darkMode
         }
         return keyboard
     }
@@ -47,15 +54,19 @@ class PinynIME : InputMethodService() {
         composing.clear()
         candidates = emptyList()
         keyboard.hanziMode = settings.hanziMode
+        keyboard.darkMode = settings.darkMode
+        PinyinEngine.applySettings(settings.hskLevel.toDouble(), settings.customTerms)
+        if (settings.grammarCheck) PinyinEngine.ensureSentenceNet()
         keyboard.updateCandidates(candidates)
         keyboard.updateComposing("")
         keyboard.updateWarnings(emptyList())
     }
 
     private fun handleKey(key: PinynKeyboardView.Key) {
+        vibrate()
         when (key) {
             PinynKeyboardView.Key.CLOSE -> requestHideSelf(0)
-            PinynKeyboardView.Key.GLOBE -> switchToNextInputMethod(false)
+            PinynKeyboardView.Key.GLOBE -> switchInputMethod()
 
             PinynKeyboardView.Key.BACKSPACE -> {
                 if (composing.isNotEmpty()) {
@@ -91,6 +102,11 @@ class PinynIME : InputMethodService() {
                 } else {
                     commitAndClear()
                     currentInputConnection?.commitText(key.code.toString(), 1)
+                    if (keyboard.symbolMode) {
+                        keyboard.symbolMode = false
+                        keyboard.symbolPage2 = false
+                        keyboard.invalidate()
+                    }
                 }
             }
 
@@ -102,8 +118,16 @@ class PinynIME : InputMethodService() {
 
             PinynKeyboardView.Key.SYMBOL -> {
                 keyboard.symbolMode = !keyboard.symbolMode
+                keyboard.symbolPage2 = false
                 keyboard.invalidate()
             }
+
+            PinynKeyboardView.Key.SYMBOL_SHIFT -> {
+                keyboard.symbolPage2 = !keyboard.symbolPage2
+                keyboard.invalidate()
+            }
+
+            PinynKeyboardView.Key.SETTINGS -> openSettings()
 
             else -> {}
         }
@@ -115,7 +139,7 @@ class PinynIME : InputMethodService() {
         keyboard.updateComposing(raw)
 
         if (raw.isNotEmpty()) {
-            val analysis = PinyinEngine.analyze(raw, settings.grammarCheck)
+            val analysis = PinyinEngine.analyze(raw, settings.grammarCheck, resources)
             candidates = analysis.candidates
             keyboard.updateCandidates(candidates)
             keyboard.updateWarnings(analysis.warnings)
@@ -148,6 +172,40 @@ class PinynIME : InputMethodService() {
         candidates = emptyList()
         keyboard.updateCandidates(candidates)
         keyboard.updateWarnings(emptyList())
+    }
+
+    private fun openSettings() {
+        val intent = Intent(this, SettingsActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
+    }
+
+    private fun switchInputMethod() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                switchToNextInputMethod(false)
+            } else {
+                val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+                imm?.showInputMethodPicker()
+            }
+        } catch (_: Exception) {
+            try {
+                val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+                imm?.showInputMethodPicker()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun vibrate() {
+        try {
+            val v = getSystemService(VIBRATOR_SERVICE) as? Vibrator
+            if (v != null && v.hasVibrator()) {
+                v.vibrate(VibrationEffect.createOneShot(15, VibrationEffect.DEFAULT_AMPLITUDE))
+            }
+        } catch (_: Exception) {
+        }
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {

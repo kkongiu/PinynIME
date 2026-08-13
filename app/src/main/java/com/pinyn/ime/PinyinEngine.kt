@@ -1,6 +1,7 @@
 package com.pinyn.ime
 
 import android.content.res.AssetManager
+import android.content.res.Resources
 
 object PinyinEngine {
 
@@ -16,13 +17,23 @@ object PinyinEngine {
     @Volatile private var sentenceNetReady = false
     @Volatile private var grammarLoaded = false
     @Volatile private var bareToneHanzi: Map<String, String> = emptyMap()
+    @Volatile private var baseHsk: List<HskWord> = emptyList()
+    @Volatile private var sentenceNetLoading = false
+
+    private var assetsRef: AssetManager? = null
+
+    private var desiredLevel: Double = 7.5
+    private var desiredTerms: Set<String> = emptySet()
+    private var appliedLevel: Double = -1.0
+    private var appliedTerms: Set<String>? = null
 
     fun init(assets: AssetManager) {
+        assetsRef = assets
         // Dizionario parole: veloce e sincrono, così il match base funziona subito.
         WordIndex.load(assets)
 
-        // Caricamento pesante (ToneNet/SentenceNet/HSK/POS) in background: evita l'ANR
-        // al primo avvio (~5s di parse + dequantizzazione sul main thread).
+        // Caricamento pesante (ToneNet/HSK/POS/gloss) in background: evita l'ANR
+        // al primo avvio. SentenceNet è caricato in modo pigro (ensureSentenceNet).
         Thread({
             try {
                 val tn = ToneNet()
@@ -32,8 +43,6 @@ object PinyinEngine {
                 val corr = CorrectionEngine(VALID_SYLLABLES, hsk).apply {
                     setTonePredictor { sylls -> tn.predictTones(sylls) }
                 }
-                val sn = SentenceNet()
-                val snReady = sn.loadFromAssets(assets)
                 val pos = readAsset(assets, "data/hsk-pos.js")
                 val glossTxt = readAsset(assets, "data/gloss.txt")
                 val reverseJs = readAsset(assets, "data/hsk-reverse.js")
@@ -42,15 +51,15 @@ object PinyinEngine {
                     toneNet = tn
                     toneNetReady = tnReady
                     correction = corr
-                    sentenceNet = sn
-                    sentenceNetReady = snReady
                     GrammarRules.loadPos(pos)
                     grammarLoaded = true
                     bareToneHanzi = bth
                     HskGloss.loadGloss(glossTxt)
                     HskGloss.loadReverse(reverseJs)
+                    baseHsk = hsk
+                    applyToEngineLocked()
                 }
-                android.util.Log.d("PinyinEngine", "Loaded: ToneNet=$tnReady SentenceNet=$snReady")
+                android.util.Log.d("PinyinEngine", "Loaded: ToneNet=$tnReady (SentenceNet lazy)")
             } catch (e: Exception) {
                 android.util.Log.e("PinyinEngine", "background init failed", e)
             }
@@ -69,6 +78,7 @@ object PinyinEngine {
                 setTonePredictor { sylls -> toneNet?.predictTones(sylls) }
             }
             bareToneHanzi = HskData.buildBareToneHanzi(hsk)
+            baseHsk = hsk
         }
         if (sentenceNetJson != null) {
             sentenceNet = SentenceNet()
@@ -86,6 +96,55 @@ object PinyinEngine {
         HskGloss.loadReverse(reverseJs)
     }
 
+    /** Carica SentenceNet in modo pigro (solo quando il grammar check è attivo). */
+    fun ensureSentenceNet() {
+        val a = assetsRef ?: return
+        synchronized(this) {
+            if (sentenceNetReady || sentenceNetLoading) return
+            sentenceNetLoading = true
+        }
+        Thread({
+            try {
+                val sn = SentenceNet()
+                val ok = sn.loadFromAssets(a)
+                synchronized(this) {
+                    sentenceNet = sn
+                    sentenceNetReady = ok
+                }
+                android.util.Log.d("PinyinEngine", "SentenceNet: $ok")
+            } catch (e: Exception) {
+                android.util.Log.e("PinyinEngine", "SentenceNet load failed", e)
+            } finally {
+                synchronized(this) { sentenceNetLoading = false }
+            }
+        }, "pinyn-sentencenet").start()
+    }
+
+    /** Applica livello HSK e termini personalizzati al motore. */
+    fun applySettings(level: Double, terms: Set<String>) {
+        synchronized(this) {
+            desiredLevel = level
+            desiredTerms = terms
+            applyToEngineLocked()
+        }
+    }
+
+    private fun applyToEngineLocked() {
+        val corr = correction ?: return
+        if (desiredLevel == appliedLevel && desiredTerms == appliedTerms) return
+        appliedLevel = desiredLevel
+        appliedTerms = desiredTerms
+        corr.setLevel(desiredLevel)
+        val custom = desiredTerms.mapNotNull { t ->
+            val p = t.split('\t')
+            if (p.size >= 2) HskWord(p[0], p[1], 0.0) else null
+        }
+        corr.setWords(baseHsk + custom)
+        WordIndex.setCustom(custom.map { c ->
+            Triple(PinyinUtils.stripTone(c.pinyinNumbers).replace(" ", ""), c.pinyinNumbers, c.word)
+        })
+    }
+
     fun reset() {
         toneNet = null
         toneNetReady = false
@@ -94,6 +153,13 @@ object PinyinEngine {
         sentenceNetReady = false
         grammarLoaded = false
         bareToneHanzi = emptyMap()
+        baseHsk = emptyList()
+        desiredLevel = 7.5
+        desiredTerms = emptySet()
+        appliedLevel = -1.0
+        appliedTerms = null
+        sentenceNetLoading = false
+        WordIndex.setCustom(emptyList())
     }
 
     private fun readAsset(assets: AssetManager, path: String): String =
@@ -101,7 +167,7 @@ object PinyinEngine {
 
     fun process(raw: String): List<Candidate> = analyze(raw).candidates
 
-    fun analyze(raw: String, grammarCheck: Boolean = true): Analysis {
+    fun analyze(raw: String, grammarCheck: Boolean = true, resources: Resources? = null): Analysis {
         // Modalità inglese (prefisso "*"): dizionario inverso inglese -> cinese
         val trimmed = raw.trimStart()
         if (trimmed.startsWith("*")) {
@@ -181,7 +247,7 @@ object PinyinEngine {
             }
         }
 
-        val warnings = computeWarnings(allSegments, grammarCheck)
+        val warnings = computeWarnings(allSegments, grammarCheck, resources)
 
         // Ogni candidato deve avere un hanzi: riempie dai toni HSK o scarta il candidato.
         val enriched = results.mapNotNull { c ->
@@ -205,7 +271,7 @@ object PinyinEngine {
         return seg.text
     }
 
-    private fun computeWarnings(allSegments: List<String>, grammarCheck: Boolean): List<String> {
+    private fun computeWarnings(allSegments: List<String>, grammarCheck: Boolean, resources: Resources?): List<String> {
         val warnings = mutableListOf<String>()
         val words = correction?.segmentWords(allSegments) ?: allSegments
 
@@ -213,17 +279,36 @@ object PinyinEngine {
         if (sentenceNetReady && words.size > 2) {
             val score = sentenceNet?.scoreSentence(words)
             if (score != null && score.flagged) {
-                warnings.add("Struttura della frase insolita")
+                warnings.add(str(resources, R.string.warn_sentence_unusual, "Unusual sentence structure"))
             }
         }
 
         // Grammar rules: conservative checks using the best hanzi guess per word
         if (grammarCheck && grammarLoaded && words.size >= 2) {
             val gw = words.map { GrammarRules.Word(it, hanziFor(it)) }
-            for (note in GrammarRules.checkGrammar(gw)) warnings.add(note.message)
+            for (note in GrammarRules.checkGrammar(gw)) warnings.add(formatNote(resources, note))
         }
 
         return warnings
+    }
+
+    private fun formatNote(resources: Resources?, note: GrammarRules.Note): String = when (note.kind) {
+        GrammarRules.Kind.DEGREE_ADV_NOUN -> str(
+            resources, R.string.grammar_degree_adv_noun, note.args[0], note.args[1],
+            "\"${note.args[0]}\" before a noun (\"${note.args[1]}\"): usually ${note.args[0]} modifies an adjective or a verb.",
+        )
+        GrammarRules.Kind.SHI_VERB -> str(
+            resources, R.string.grammar_shi_verb, note.args[0],
+            "\"是\" before the verb \"${note.args[0]}\": usually the verb is used directly (\"${note.args[0]}…\").",
+        )
+        GrammarRules.Kind.MA_NOT_FINAL -> str(
+            resources, R.string.grammar_ma_not_final,
+            "\"吗\" goes at the end of the sentence.",
+        )
+    }
+
+    private fun str(resources: Resources?, id: Int, default: String, vararg args: Any): String {
+        return if (resources != null) resources.getString(id, *args) else default
     }
 
     private fun hanziFor(word: String): String {
