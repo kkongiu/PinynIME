@@ -1,6 +1,6 @@
 # Pinyn IME — Android Pinyin Input Method
 
-Porting su Android 8.0 (API 26) ARM64 del progetto [Pinyn](https://github.com/...),
+Porting su Android 8.0 (API 26) ARM64 del progetto [Pinyn](https://github.com/kkongiu/Pinyn),
 correttore pinyin intelligente per studenti di cinese.
 
 ## Architettura
@@ -91,7 +91,7 @@ export JAVA_HOME=~/java/jdk-21.0.12+8   # Eclipse Temurin
 export ANDROID_HOME=~/Android/Sdk          # API 26 + 34
 
 # Build
-cd ~/pinyn-ime
+cd PinynIME
 ./gradlew assembleDebug
 
 # Test
@@ -106,5 +106,5 @@ adb logcat | grep -i pinyn
 
 ## Riferimenti
 
-- Progetto originale Pinyn: `/home/kongiu/projects/Pinyn/`
+- Progetto originale Pinyn: https://github.com/kkongiu/Pinyn
 - Android IME docs: https://developer.android.com/reference/android/inputmethodservice/InputMethodService
