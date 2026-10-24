@@ -1,5 +1,10 @@
 # PinynIME
 
+![status: alpha](https://img.shields.io/badge/status-alpha-red)
+
+> ⚠️ **Status: alpha** — early-stage software, may be incomplete or unstable.
+> **Use at your own risk.**
+
 Android IME (tastiera) per l'inserimento del pinyin, con predizione neurale dei toni, dizionario HSK ponderato e motore di correzione.
 
 Porting nativo **Kotlin** dell'estensione browser [Pinyn](https://github.com/kkongiu/Pinyn).
