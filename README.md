@@ -52,4 +52,4 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 Codice: MIT (vedi [`LICENSE`](LICENSE)).
 
-Il dizionario HSK 3.0 e le reti neurali derivano dal progetto [Pinyn](https://github.com/kkongiu/Pinyn). Dati di terze parti soggetti alle rispettive licenze: CC-CEDICT (CC-BY-SA 4.0), Tatoeba (CC-BY), HSK 3.0 da ivankra/hsk30 (MIT). Dettagli in fondo al file `LICENSE`.
+Il dizionario HSK 3.0 e le reti neurali derivano dal progetto [Pinyn](https://github.com/kkongiu/Pinyn). Dati di terze parti soggetti alle rispettive licenze: CC-CEDICT (CC-BY-SA 4.0), Tatoeba (CC-BY), HSK 3.0 da ivankra/hsk30 (MIT). Dettagli in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
